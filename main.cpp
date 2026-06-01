@@ -101,13 +101,17 @@ struct Vec2 {
     f32 x;
     f32 y;
 
-    inline f32 Length() {
+    constexpr f32 Length() const {
         return hypotf(x, y);
     }
 
-    inline Vec2 Normalize() {
+    inline Vec2 Normalize() const {
         f32 len = Length();
         return Vec2{ x / len, y / len };
+    }
+
+    constexpr void Lerp(Vec2 b, f32 t) {
+        *this = *this + (b - *this) * t;
     }
 
     // Unary
@@ -218,6 +222,12 @@ inline Vec2 GetRenderSize(const Vec2 size, const f32 zoom) {
 }
 
 #pragma endregion
+
+template<typename T>
+constexpr inline T Lerp(const T& a, const T& b, float t)
+{
+    return a + (b - a) * t;
+}
 
 struct Player {
     Vec2 vel;
@@ -338,8 +348,34 @@ void MovePlayer(Player* p, f32 dt) {
     p->vel = { 0.0f, 0.0f };
 }
 
+void MoveFreecam(Vec2* pos, f32 dt) {
+    Vec2 dir = { 0.0f, 0.0f };
+    const bool *kb = SDL_GetKeyboardState(NULL);
+
+    if (kb[SDL_SCANCODE_UP]) dir.y -= 1.0f;
+    if (kb[SDL_SCANCODE_DOWN]) dir.y += 1.0f;
+    if (kb[SDL_SCANCODE_LEFT]) dir.x -= 1.0f;
+    if (kb[SDL_SCANCODE_RIGHT]) dir.x += 1.0f;
+
+    if (dir.Length() > 0.0f) {
+        dir = dir.Normalize();
+
+        constexpr f32 freecam_movespeed = 200.0f;
+        *pos += (dir * freecam_movespeed * dt);
+    }
+}
+
 constexpr inline f32 DegToRad(f32 deg) {
     return deg * (f32(M_PI) / 180.0f);
+}
+
+bool IsColliding(Vec2 p1, Vec2 s1, Vec2 p2, Vec2 s2, Vec2 o1 = CENTER_ORIGIN, Vec2 o2 = CENTER_ORIGIN) {
+    Vec2 tl1 = p1 - s1 * o1;
+    Vec2 tl2 = p2 - s2 * o2;
+    return tl1.x + s1.x > tl2.x &&
+           tl1.x < tl2.x + s2.x &&
+           tl1.y + s1.y > tl2.y &&
+           tl1.y < tl2.y + s2.y;
 }
 
 void UpdateBulletPattern(BulletPattern *bp, f32 dt) {
@@ -374,7 +410,7 @@ void UpdateBulletPattern(BulletPattern *bp, f32 dt) {
 
             constexpr u8 HIGH = 7;
             std::uniform_int_distribution<u8> xdist(0, HIGH);
-            std::uniform_real_distribution<f32> rxdist(-20.0f, 20.0f);
+            std::uniform_real_distribution<f32> rxdist(-40.0f, 40.0f);
 
             constexpr u8 GAP = 69;
             const f32 width_span = f32(HIGH * GAP);
@@ -390,7 +426,7 @@ void UpdateBulletPattern(BulletPattern *bp, f32 dt) {
             bp->bullets.push_back(b);
 
             randx = (randx + 2) % HIGH;
-            b.pos.x = f32(randx * GAP) - f32(width_span) * 0.5f;
+            b.pos.x = f32(randx * GAP) - f32(width_span) * 0.5f + rxdist(RNG);
             bp->bullets.push_back(b);
         }
 
@@ -456,7 +492,12 @@ int main() {
             SDL_snprintf(buf, sizeof(buf), "bullethellgame : FPS(%.2f) : DTms(%.2f)", uc.fps, uc.dt * 1000);
             SDL_SetWindowTitle(game->wn, buf);
         }
-        
+
+        // FREECAM BOOL DON'T FORGET THIS PLS
+        static Camera freecam = CreateCamera();
+        static bool freecam_enabled = false;
+        static bool follow_camera_enabled = false;
+
 #pragma region EventLoop
         SDL_Event& ev = game->ev;
         while (SDL_PollEvent(&ev)) {
@@ -471,6 +512,17 @@ int main() {
                 // scale camera accordingly
                 game->world.camera.zoom = f32(game->wh) / f32(default_height);
             }
+            else if (ev.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode key = ev.key.key;
+                if (key == SDLK_ESCAPE) { // temporary convenient exit
+                    game->quit = true;
+                    break;
+                } else if (key == SDLK_G && !ev.key.repeat) {
+                    freecam_enabled = !freecam_enabled;
+                } else if (key == SDLK_F && !ev.key.repeat) {
+                    follow_camera_enabled = !follow_camera_enabled;
+                }
+            }
         }
 #pragma endregion // EventLoop
 
@@ -481,7 +533,13 @@ int main() {
         Camera *c = &game->world.camera;
         Vec2 wn_size = { f32(game->ww), f32(game->wh) };
 
-        MovePlayer(p, game->uc_ns.dt);
+        if (!freecam_enabled) {
+            MovePlayer(p, game->uc_ns.dt);
+            freecam.pos = c->pos;
+            freecam.zoom = c->zoom;
+        } else {
+            MoveFreecam(&freecam.pos, dt);
+        }
 
         for (auto& bp : game->world.active_patterns) {
             UpdateBulletPattern(&bp, dt);
@@ -493,7 +551,7 @@ int main() {
                 Vec2 brc = GetRenderCoords(*c, btl, wn_size);
                 Vec2 brs = b.size * c->zoom;
 
-                constexpr f32 more = 320.0f;
+                constexpr f32 more = 120.0f;
                 bool offscreen =
                     brc.x + brs.x < 0 - more ||
                     brc.x > wn_size.x + more ||
@@ -509,11 +567,47 @@ int main() {
             }
         }
 
+        Vec2 arena_pos = { 0, -400 };
+        Vec2 arena_size = { 854, 480 };
+
+        bool p_in_arena = IsColliding(p->pos, p->size, arena_pos, arena_size);
+        if (p_in_arena) {
+            const f32 t = 1.0f - expf(-6.9f * dt);
+            const f32 target_zoom = f32(game->wh) / 500.0f;
+
+            c->pos = Lerp(c->pos, arena_pos, t);
+            c->zoom = Lerp(c->zoom, target_zoom, t);
+        } else {
+            const f32 t = 1.0f - expf(-6.9f * dt);
+            const f32 target_zoom = f32(game->wh) / f32(default_height);
+
+            if (follow_camera_enabled)
+                c->pos = Lerp(c->pos, p->pos, t);
+            else
+                c->pos = Lerp(c->pos, { 0, 0 }, t);
+            c->zoom = Lerp(c->zoom, target_zoom, t);
+        }
+
         SDL_Renderer *rr = game->rr;
         SDL_SetRenderDrawColor(rr, 22, 22, 30, 255);
         SDL_RenderClear(rr);
 
+        if (freecam_enabled)
+            c = &freecam;
+        else
+            c = &game->world.camera;
+
         /* render world*/ {
+            /* render arena */ {
+                Vec2 tl = GetTopleft(arena_pos, arena_size);
+                Vec2 rc = GetRenderCoords(*c, tl, wn_size);
+                Vec2 rs = arena_size * c->zoom;
+
+                SDL_FRect dst = { rc.x, rc.y, rs.x, rs.y };
+                SDL_SetRenderDrawColor(rr, 0, 0, 0, 255);
+                SDL_RenderFillRect(rr, &dst);
+            }
+
             /* render player */ {
                 Vec2 ptl = GetTopleft(p->pos, p->size);
                 Vec2 prc = GetRenderCoords(*c, ptl, wn_size);
