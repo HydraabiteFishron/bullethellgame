@@ -8,17 +8,22 @@
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <SDL3_image/SDL_image.h>
 
 #include "colors.hpp"
 #include "customtypes.hpp"
 
 constexpr Vec2 CENTER_ORIGIN = { 0.5f, 0.5f };
-// uses CENTER_ORIGIN by default
 Vec2 GetTopleft(const Vec2 pos, const Vec2 size, const Vec2 origin = CENTER_ORIGIN) {
     return pos - size * origin;
 }
 
 #pragma region Camera and Camera Math
+enum CameraState : u8 {
+	CAMERA_STATIC,
+	CAMERA_FOLLOW_PLAYER,
+};
+
 struct Camera {
     Vec2 pos;
     f32 zoom;
@@ -110,10 +115,36 @@ BulletPattern CreateBulletPattern(BPType type, Vec2 world_origin, size_t initial
     return bp;
 }
 
+namespace Tiles {
+	constexpr int SIZE = 16;
+	constexpr char FILE_PATH[] = "assets/tiles_shit.png";
+
+	enum Type : u8 {
+		TILE_GRASS,
+		TILE_PATH,
+	};
+}
+
+struct WorldTiles {
+	std::vector<Tiles::Type> tiles = {};
+	size_t w = 0;
+	size_t h = 0;
+
+	Tiles::Type default_background_tile = Tiles::TILE_GRASS;
+};
+
+void RenderWorldTiles(WorldTiles* wt, SDL_Renderer *rr) {
+	// TODO: infinitely render default_background_tile
+}
+
 struct World {
-    Player player;
-    Camera camera;
-    std::vector<BulletPattern> active_patterns;
+    Player player = {};
+    Camera camera = {};
+	Camera freecam = {};
+    std::vector<BulletPattern> active_patterns = {};
+
+	CameraState cam_state = CAMERA_STATIC;
+	bool freecam_enabled = false;
 };
 
 World CreateDebugWorld() {
@@ -124,6 +155,20 @@ World CreateDebugWorld() {
 
     w.player = CreatePlayer();
     w.camera = CreateCamera();
+	w.freecam = CreateCamera();
+	w.cam_state = CAMERA_STATIC;
+
+    return w;
+}
+
+World CreateDebugWorld2() {
+    World w;
+    w.active_patterns = {};
+
+    w.player = CreatePlayer();
+    w.camera = CreateCamera();
+	w.freecam = CreateCamera();
+	w.cam_state = CAMERA_FOLLOW_PLAYER;
 
     return w;
 }
@@ -307,11 +352,29 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
                 SDL_Delay(1000);
                 break;
 
+			case SDLK_G: {
+				World *wld = &state->world;
+				wld->freecam_enabled = !wld->freecam_enabled;
+			} break;
+
             default:
                 break;
             } // switch (key) end
         } // repeat keys end
-    }
+    } break;
+
+	case SDL_EVENT_MOUSE_WHEEL: {
+		if (!state->world.freecam_enabled)
+			break;
+
+		f32 *zoom = &state->world.freecam.zoom;
+		*zoom *= std::pow(1.1f, event->wheel.y);
+
+		if (*zoom < 0.1f)
+			*zoom = 0.1f;
+		else if (*zoom > 5.0f)
+			*zoom = 5.0f;
+	} break;
 
     default:
         break;
@@ -338,11 +401,35 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 #pragma region Update
     const float dt = game->uc_ns.dt;
 
-    Player *p = &game->world.player;
-    Camera *c = &game->world.camera;
+	World *wld = &game->world;
+    Player *p = &wld->player;
+    Camera *c = &wld->camera;
     Vec2 wn_size = { f32(game->ww), f32(game->wh) };
 
-    /* Move Player */ {
+	// Movement
+	if (wld->freecam_enabled) {
+        const bool *kb = state->kb;
+        Vec2 dir = { 0.0f, 0.0f };
+
+        if (kb[SDL_SCANCODE_UP]) dir.y -= 1.0f;
+        if (kb[SDL_SCANCODE_DOWN]) dir.y += 1.0f;
+        if (kb[SDL_SCANCODE_LEFT]) dir.x -= 1.0f;
+        if (kb[SDL_SCANCODE_RIGHT]) dir.x += 1.0f;
+
+        const bool focused = kb[SDL_SCANCODE_LSHIFT];
+		constexpr f32 fc_mvspd = 400.0f;
+		constexpr f32 foc_fc_mvspd = 200.0f;
+
+        if (dir.Length() > 0.0f) {
+            dir = dir.Normalize();
+			const f32 mvspd = (focused) ?
+				foc_fc_mvspd / wld->freecam.zoom :
+				fc_mvspd / wld->freecam.zoom;
+
+			wld->freecam.pos += dir * mvspd * dt;
+        }
+	} // freecam movement
+	else {
         const bool *kb = state->kb;
         Vec2 dir = { 0.0f, 0.0f };
 
@@ -361,7 +448,10 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
         p->pos += p->vel * dt;
         p->vel = { 0.0f, 0.0f };
-    } // Player Movement
+
+		// make sure freecam is synced when disabled
+		wld->freecam = *c;
+	} // player movement
 
     // Update Bullet Patterns and Delete Offscreen
     for (auto& bp : game->world.active_patterns) {
@@ -397,13 +487,17 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     SDL_RenderClear(rr);
 
     /* render world*/ {
+		// cam to use for rendering
+		Camera *cam = (wld->freecam_enabled) ?
+			&wld->freecam : &wld->camera;
+
         /* render player */ {
             Vec2 ptl = GetTopleft(p->pos, p->size);
-            Vec2 prc = GetRenderCoords(*c, ptl, wn_size);
-            Vec2 prs = p->size * c->zoom;
+            Vec2 prc = GetRenderCoords(*cam, ptl, wn_size);
+            Vec2 prs = p->size * cam->zoom;
 
             SDL_FRect pdst = { prc.x, prc.y, prs.x, prs.y };
-            SDL_SetRenderDrawColor(rr, 255, 255, 255, 255);
+			SetDrawColor(rr, Colors::hatsune_miku);
             SDL_RenderFillRect(rr, &pdst);
         }
 
@@ -411,8 +505,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
             for (const auto& bp : game->world.active_patterns) {
                 for (const auto& b : bp.bullets) {
                     Vec2 btl = GetTopleft(bp.pos + b.pos, b.size);
-                    Vec2 brc = GetRenderCoords(*c, btl, wn_size);
-                    Vec2 brs = b.size * c->zoom;
+                    Vec2 brc = GetRenderCoords(*cam, btl, wn_size);
+                    Vec2 brs = b.size * cam->zoom;
 
                     SDL_FRect bdst = { brc.x, brc.y, brs.x, brs.y };
                     SDL_SetRenderDrawColor(rr, 255, 255, 255, 255);
