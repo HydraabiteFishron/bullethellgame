@@ -1,0 +1,5 @@
+# this file is necessary for my dipshit clangd lsp
+# to actually fucking work
+
+-std=c++17
+-Iinclude

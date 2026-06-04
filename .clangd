@@ -1,0 +1,4 @@
+# I also fucking need this for my clangd lsp
+CompileFlags:
+  Add:
+    - --target=x86_64-w64-windows-gnu
