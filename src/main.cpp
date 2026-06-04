@@ -1,5 +1,4 @@
 #include <cmath>
-#include <cstdint>
 #include <cassert>
 
 #include <iostream>
@@ -42,7 +41,7 @@ inline Vec2 GetRenderSize(const Vec2 size, const f32 zoom) {
 
 #pragma region Custom Math
 constexpr inline f32 DegToRad(f32 deg) {
-    return deg * (f32(M_PI) / 180.0f);
+    return deg * (f32(PI_F32) / 180.0f);
 }
 
 template<typename T>
@@ -181,7 +180,7 @@ void UpdateBulletPattern(BulletPattern *bp, f32 dt) {
 
             constexpr f32 A = DegToRad(45.0f); // amplitude
             constexpr f32 FREQ = 0.125; // oscillations per second
-            constexpr f32 OMEGA = 2.0f * f32(M_PI) * FREQ; // angular frequency
+            constexpr f32 OMEGA = 2.0f * f32(PI_F32) * FREQ; // angular frequency
 
             f32 angle = DegToRad(270.0f) + A * sinf(OMEGA * now);
 
@@ -219,6 +218,8 @@ void UpdateBulletPattern(BulletPattern *bp, f32 dt) {
 
         break;
     }
+	default:
+		break;
     } // switch end
 
     for (auto& b : bp->bullets) {
@@ -392,7 +393,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 #pragma region Rendering
     SDL_Renderer *rr = game->rr;
-    SDL_SetRenderDrawColor(rr, 22, 22, 30, 255);
+	SetDrawColor(rr, Colors::tokyonight_blue);
     SDL_RenderClear(rr);
 
     /* render world*/ {

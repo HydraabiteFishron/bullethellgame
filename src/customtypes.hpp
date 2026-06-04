@@ -21,6 +21,9 @@ using f64 = double;
 constexpr u64 NS_TO_S = 1000000000;
 constexpr f32 NS_TO_S_f32 = 1000000000.0f;
 
+constexpr double PI_F64 = 3.14159265358979323846; 
+constexpr float PI_F32 = 3.14159265f; 
+
 struct UpdateClockNS {
     u64 frame_start;
     u64 frame_end;
@@ -41,7 +44,7 @@ struct UpdateClockNS {
 };
 
 // @param target_fps can be set to 0 for unlimited
-UpdateClockNS CreateUpdateClockNS(u64 target_fps) {
+static inline UpdateClockNS CreateUpdateClockNS(u64 target_fps) {
     UpdateClockNS uc_ns;
     if (target_fps == 0)
         uc_ns.target_frame_time = 0;
@@ -57,7 +60,7 @@ UpdateClockNS CreateUpdateClockNS(u64 target_fps) {
 }
 
 // @param target_fps can be set to 0 for unlimited
-void UpdateClockNS::SetTargetFPS(u64 target_fps) {
+inline void UpdateClockNS::SetTargetFPS(u64 target_fps) {
     if(target_fps == 0) {
         target_frame_time = 0;
         return;
