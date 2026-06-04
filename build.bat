@@ -15,4 +15,4 @@ g++ src\main.cpp ^
     -Iinclude ^
     -Llib ^
     -lSDL3 ^
-    -o g.exe
+    -o build\g.exe
