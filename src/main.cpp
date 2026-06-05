@@ -13,37 +13,8 @@
 
 #include "colors.hpp"
 #include "customtypes.hpp"
-
-constexpr Vec2 CENTER_ORIGIN = { 0.5f, 0.5f };
-Vec2 GetTopleft(const Vec2 pos, const Vec2 size, const Vec2 origin = CENTER_ORIGIN) {
-    return pos - size * origin;
-}
-
-#pragma region Camera and Camera Math
-enum CameraState : u8 {
-	CAMERA_STATIC,
-	CAMERA_FOLLOW_PLAYER,
-};
-
-struct Camera {
-    Vec2 pos;
-    f32 zoom;
-};
-
-Camera CreateCamera(Vec2 pos = {0.0f,0.0f}, f32 zoom = 1.0f) {
-    return { pos, zoom };
-}
-
-// for camera with center origin
-Vec2 GetRenderCoords(const Camera& cam, const Vec2 world_pos, const Vec2 screen_dimensions) {
-    assert(cam.zoom > 0.0f && "hey dipshit, camera zoom is set to 0.0f you fucking moron.");
-    return (world_pos - cam.pos) * cam.zoom + (screen_dimensions * 0.5f);
-}
-
-inline Vec2 GetRenderSize(const Vec2 size, const f32 zoom) {
-    return size * zoom;
-}
-#pragma endregion // Camera and Camera Math
+#include "update_clock.hpp"
+#include "rendering.hpp"
 
 #pragma region Custom Math
 constexpr inline f32 DegToRad(f32 deg) {
@@ -144,6 +115,11 @@ struct WorldTiles {
 	size_t h = 0;
 
 	Tiles::Type default_background_tile = Tiles::TILE_GRASS;
+};
+
+enum CameraState : u8 {
+	CAMERA_STATIC,
+	CAMERA_FOLLOW_PLAYER,
 };
 
 struct World {
@@ -412,83 +388,6 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     return SDL_APP_CONTINUE;
 }
 #pragma endregion // Events
-
-SDL_FRect GetScreenDSTFromWorld(
-	Camera cam,
-	Vec2 world_pos,
-	Vec2 world_size,
-	Vec2 wn_size,
-	Vec2 origin = CENTER_ORIGIN
-) {
-	Vec2 topleft = world_pos - world_size * origin;
-
-    assert(cam.zoom > 0.0f && "cam zoom is <= 0");
-	Vec2 render_coords =
-		(topleft - cam.pos) * cam.zoom + (wn_size * 0.5f);
-
-	Vec2 render_size = world_size * cam.zoom;
-
-	return SDL_FRect {
-		.x = render_coords.x,
-		.y = render_coords.y,
-		.w = render_size.x,
-		.h = render_size.y
-	};
-}
-
-void RenderCircle(
-	SDL_Renderer *rr,
-	Vec2 pos,
-	f32 radius,
-	SDL_FColor col = {1,1,1,1},
-	int segments = 24
-) {
-	// I just found out because I'm currently getting a warning
-	// but bro... C++ is scared of variable length arrays?????
-	// are we serious here my man????? stack overflow ma balls bro.
-	if (segments >= 32)
-		segments = 32;
-	SDL_Vertex vertices[segments + 2];
-	int indices[segments * 3];
-
-	size_t vc = 0;
-	size_t ic = 0;
-
-	vertices[vc] = {
-		{ pos.x, pos.y },
-		col,
-		{ 0.0f, 0.0f }
-	};
-	vc++;
-
-	for (int i = 0; i <= segments; ++i) {
-		float angle = (float)i / f32(segments) * SDL_PI_F * 2.0f;
-
-		constexpr SDL_FPoint zero_point = { 0.0f, 0.0f };
-		SDL_FPoint _pos = {
-			pos.x + std::cos(angle) * radius,
-			pos.y + std::sin(angle) * radius
-		};
-
-		vertices[vc] =
-			{ _pos, col, zero_point }; vc++;
-	}
-
-	for (int i = 1; i <= segments; ++i) {
-		indices[ic] = 0;   ic++;
-		indices[ic] = i;   ic++;
-		indices[ic] = i+1; ic++;
-	}
-
-	SDL_RenderGeometry(
-		rr,
-		nullptr,
-		vertices,
-		segments + 2,
-		indices,
-		segments * 3
-	);
-}
 
 SDL_AppResult SDL_AppIterate(void* appstate) {
     Game *state = (Game *)appstate;

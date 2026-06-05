@@ -10,7 +10,7 @@ if "%1"=="release" (
     set "BUILD_FLAGS="
 )
 
-g++ src\main.cpp ^
+g++ src\main.cpp src\rendering.cpp ^
     %BUILD_FLAGS% ^
     -Iinclude ^
     -Llib ^
