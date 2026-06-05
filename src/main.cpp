@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <vector>
+#include <unordered_map>
 #include <random>
 
 #define SDL_MAIN_USE_CALLBACKS 1
@@ -61,6 +62,7 @@ struct Player {
     Vec2 pos;
     Vec2 size;
 
+	f32 radius;
     f32 speed;
     f32 focused_speed;
 
@@ -71,6 +73,7 @@ Player CreatePlayer() {
     Player player {
         .pos = { 0.0f, 0.0f },
         .size = { 8.0f, 8.0f },
+		.radius = 3.0f,
         .speed = 150.0f,
         .focused_speed = 75.0f
     };
@@ -117,7 +120,17 @@ BulletPattern CreateBulletPattern(BPType type, Vec2 world_origin, size_t initial
 
 namespace Tiles {
 	constexpr int SIZE = 16;
+	constexpr f32 SCALE_MOD = 1.69f;
+	constexpr f32 SCALED_SIZE = SIZE * SCALE_MOD;
+
 	constexpr char FILE_PATH[] = "assets/tiles_shit.png";
+	constexpr char TEXTURE_KEY[] = "tile_atlas";
+
+	// Hardcoded SRC Rects
+	constexpr SDL_FRect GRASS_SRC = {
+		0, 0,
+		Tiles::SIZE, Tiles::SIZE
+	};
 
 	enum Type : u8 {
 		TILE_GRASS,
@@ -133,15 +146,12 @@ struct WorldTiles {
 	Tiles::Type default_background_tile = Tiles::TILE_GRASS;
 };
 
-void RenderWorldTiles(WorldTiles* wt, SDL_Renderer *rr) {
-	// TODO: infinitely render default_background_tile
-}
-
 struct World {
+    std::vector<BulletPattern> active_patterns = {};
+	WorldTiles tiles = {};
     Player player = {};
     Camera camera = {};
 	Camera freecam = {};
-    std::vector<BulletPattern> active_patterns = {};
 
 	CameraState cam_state = CAMERA_STATIC;
 	bool freecam_enabled = false;
@@ -173,22 +183,26 @@ World CreateDebugWorld2() {
     return w;
 }
 
-constexpr u32 default_width = 640, default_height = 360;
+// constexpr u32 default_width = 640, default_height = 360;
+constexpr u32 default_width = 854, default_height = 480;
+using TextureMap = std::unordered_map<std::string, SDL_Texture*>;
 
 struct Game {
-    World world;
-    UpdateClockNS uc_ns;
+    World world = {};
+    UpdateClockNS uc_ns = {};
 
-    u32 ww;
-    u32 wh;
+	TextureMap tex_map = {};
 
-    SDL_Event ev;
-    SDL_Window *wn;
-    SDL_Renderer *rr;
-    const bool *kb;
+    u32 ww = 0;
+    u32 wh = 0;
 
-    bool quit;
-    bool fullscreen;
+    SDL_Event ev = {};
+    SDL_Window *wn = NULL;
+    SDL_Renderer *rr = NULL;
+    const bool *kb = NULL;
+
+    bool quit = false;
+    bool fullscreen = false;
 };
 #pragma endregion // Game Types
 
@@ -275,7 +289,8 @@ void UpdateBulletPattern(BulletPattern *bp, f32 dt) {
 
 #pragma region Initialization
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
-    game = (Game *)SDL_calloc(1, sizeof(Game));
+	//
+    game = new Game;
     if (!game) {
         std::cout << "failed to allocate memory\n";
         return SDL_APP_FAILURE;
@@ -298,6 +313,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
         return SDL_APP_FAILURE;
     }
 
+	// renderer
+	SDL_SetDefaultTextureScaleMode(game->rr, SDL_SCALEMODE_PIXELART);
+
     // rng
     std::random_device rd;
     RNG = std::mt19937(rd());
@@ -309,7 +327,18 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     u64 target_fps = 240;
     game->uc_ns = CreateUpdateClockNS(target_fps);
 
-    game->world = CreateDebugWorld();
+	// world
+    game->world = CreateDebugWorld2();
+
+	// textures
+	TextureMap *tm = &game->tex_map;
+
+	SDL_Texture *tex = IMG_LoadTexture(game->rr, Tiles::FILE_PATH);
+	assert(tex != NULL && "tile_shit could not be loaded");
+
+	(*tm)[Tiles::TEXTURE_KEY] = tex;
+
+	SDL_RaiseWindow(game->wn);
     return SDL_APP_CONTINUE;
 }
 #pragma endregion // Initialization
@@ -384,6 +413,83 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
 }
 #pragma endregion // Events
 
+SDL_FRect GetScreenDSTFromWorld(
+	Camera cam,
+	Vec2 world_pos,
+	Vec2 world_size,
+	Vec2 wn_size,
+	Vec2 origin = CENTER_ORIGIN
+) {
+	Vec2 topleft = world_pos - world_size * origin;
+
+    assert(cam.zoom > 0.0f && "cam zoom is <= 0");
+	Vec2 render_coords =
+		(topleft - cam.pos) * cam.zoom + (wn_size * 0.5f);
+
+	Vec2 render_size = world_size * cam.zoom;
+
+	return SDL_FRect {
+		.x = render_coords.x,
+		.y = render_coords.y,
+		.w = render_size.x,
+		.h = render_size.y
+	};
+}
+
+void RenderCircle(
+	SDL_Renderer *rr,
+	Vec2 pos,
+	f32 radius,
+	SDL_FColor col = {1,1,1,1},
+	int segments = 24
+) {
+	// I just found out because I'm currently getting a warning
+	// but bro... C++ is scared of variable length arrays?????
+	// are we serious here my man????? stack overflow ma balls bro.
+	if (segments >= 32)
+		segments = 32;
+	SDL_Vertex vertices[segments + 2];
+	int indices[segments * 3];
+
+	size_t vc = 0;
+	size_t ic = 0;
+
+	vertices[vc] = {
+		{ pos.x, pos.y },
+		col,
+		{ 0.0f, 0.0f }
+	};
+	vc++;
+
+	for (int i = 0; i <= segments; ++i) {
+		float angle = (float)i / f32(segments) * SDL_PI_F * 2.0f;
+
+		constexpr SDL_FPoint zero_point = { 0.0f, 0.0f };
+		SDL_FPoint _pos = {
+			pos.x + std::cos(angle) * radius,
+			pos.y + std::sin(angle) * radius
+		};
+
+		vertices[vc] =
+			{ _pos, col, zero_point }; vc++;
+	}
+
+	for (int i = 1; i <= segments; ++i) {
+		indices[ic] = 0;   ic++;
+		indices[ic] = i;   ic++;
+		indices[ic] = i+1; ic++;
+	}
+
+	SDL_RenderGeometry(
+		rr,
+		nullptr,
+		vertices,
+		segments + 2,
+		indices,
+		segments * 3
+	);
+}
+
 SDL_AppResult SDL_AppIterate(void* appstate) {
     Game *state = (Game *)appstate;
 
@@ -449,9 +555,14 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
         p->pos += p->vel * dt;
         p->vel = { 0.0f, 0.0f };
 
-		// make sure freecam is synced when disabled
-		wld->freecam = *c;
 	} // player movement
+	
+	if (wld->cam_state == CAMERA_FOLLOW_PLAYER) {
+		c->pos = p->pos;
+
+		// make sure freecam is synced when disabled
+		if (!wld->freecam_enabled) wld->freecam = *c;
+	}
 
     // Update Bullet Patterns and Delete Offscreen
     for (auto& bp : game->world.active_patterns) {
@@ -487,30 +598,132 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     SDL_RenderClear(rr);
 
     /* render world*/ {
+		TextureMap *tex_map = &state->tex_map;
 		// cam to use for rendering
 		Camera *cam = (wld->freecam_enabled) ?
 			&wld->freecam : &wld->camera;
 
-        /* render player */ {
-            Vec2 ptl = GetTopleft(p->pos, p->size);
-            Vec2 prc = GetRenderCoords(*cam, ptl, wn_size);
-            Vec2 prs = p->size * cam->zoom;
+		/* render tiles */ {
+			WorldTiles *tiles = &wld->tiles;
+			auto it = tex_map->find(Tiles::TEXTURE_KEY);
 
-            SDL_FRect pdst = { prc.x, prc.y, prs.x, prs.y };
-			SetDrawColor(rr, Colors::hatsune_miku);
-            SDL_RenderFillRect(rr, &pdst);
-        }
+			if (it != tex_map->end()) {
+				SDL_Texture *tile_atlas = it->second;
+				Vec2 tex_size = {};
+
+				SDL_GetTextureSize(tile_atlas, &tex_size.x, &tex_size.y);
+				tex_size *= Tiles::SCALE_MOD;
+
+				constexpr Vec2 chunk_1 = {0,0};
+				constexpr Vec2 chunk_2 = {-1,-1};
+				constexpr int CHUNK_SIZE = 16;
+
+				for (size_t y = 0;y < CHUNK_SIZE;y++) {
+					for (size_t x = 0;x < CHUNK_SIZE;x++) {
+						Vec2 chunk_pos = chunk_2 * CHUNK_SIZE;
+						chunk_pos *= Tiles::SCALED_SIZE;
+
+						Vec2 pos = {
+							f32(x) * f32(Tiles::SCALED_SIZE),
+							f32(y) * f32(Tiles::SCALED_SIZE)
+						};
+						pos += chunk_pos;
+
+						Vec2 size = {
+							f32(Tiles::SCALED_SIZE),
+							f32(Tiles::SCALED_SIZE)
+						};
+
+						SDL_FRect grass_src =
+							Tiles::GRASS_SRC;
+
+						SDL_FRect dst = GetScreenDSTFromWorld(
+							*cam, pos, size, wn_size
+						);
+
+						SDL_RenderTexture(
+							rr,
+							tile_atlas,
+							&grass_src,
+							&dst
+						);
+					}
+				}
+
+				for (size_t y = 0;y < CHUNK_SIZE;y++) {
+					for (size_t x = 0;x < CHUNK_SIZE;x++) {
+						Vec2 chunk_pos = chunk_1 * CHUNK_SIZE;
+						chunk_pos *= Tiles::SCALED_SIZE;
+
+						Vec2 pos = {
+							f32(x) * f32(Tiles::SCALED_SIZE),
+							f32(y) * f32(Tiles::SCALED_SIZE)
+						};
+						pos += chunk_pos;
+
+						Vec2 size = {
+							f32(Tiles::SCALED_SIZE),
+							f32(Tiles::SCALED_SIZE)
+						};
+
+						SDL_FRect grass_src =
+							Tiles::GRASS_SRC;
+
+						SDL_FRect dst = GetScreenDSTFromWorld(
+							*cam, pos, size, wn_size
+						);
+
+						SDL_RenderTexture(
+							rr,
+							tile_atlas,
+							&grass_src,
+							&dst
+						);
+					}
+				}
+
+				// TODO: render default_tile infinitely
+				constexpr int RENDER_DISTANCE_X = 3;
+				constexpr int RENDER_DISTANCE_Y = 2;
+
+			} else {
+				std::cout << "tex_map not found\n";
+			}
+		}
+
+		/* what the heck is a SDL_RenderGeometry()??? */ {
+			Vec2 pos = GetRenderCoords(*cam, p->pos, wn_size);
+			SDL_FColor col1 = {
+				Colors::red.r / 255.0,
+				Colors::red.g / 255.0,
+				Colors::red.b / 255.0,
+				Colors::red.a / 255.0
+			};
+			SDL_FColor col2 = {
+				Colors::white.r / 255.0,
+				Colors::white.g / 255.0,
+				Colors::white.b / 255.0,
+				Colors::white.a / 255.0
+			};
+
+			f32 zoom = cam->zoom;
+			RenderCircle(rr, pos, 4.5f * zoom, col1);
+			RenderCircle(rr, pos, 3.0f * zoom, col2);
+		} // SDL_RenderGeometry() test
 
         /* render bullets */ {
             for (const auto& bp : game->world.active_patterns) {
                 for (const auto& b : bp.bullets) {
-                    Vec2 btl = GetTopleft(bp.pos + b.pos, b.size);
-                    Vec2 brc = GetRenderCoords(*cam, btl, wn_size);
-                    Vec2 brs = b.size * cam->zoom;
 
-                    SDL_FRect bdst = { brc.x, brc.y, brs.x, brs.y };
-                    SDL_SetRenderDrawColor(rr, 255, 255, 255, 255);
-                    SDL_RenderFillRect(rr, &bdst);
+					SDL_FRect dst = GetScreenDSTFromWorld(
+						*cam,
+						b.pos,
+						b.size,
+						wn_size
+					);
+
+					SetDrawColor(rr, Colors::white);
+                    SDL_RenderFillRect(rr, &dst);
                 }
             }
         }
@@ -530,6 +743,6 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result) {
 
     SDL_DestroyRenderer(game->rr);
     SDL_DestroyWindow(game->wn);
-    SDL_free(game);
+    delete game;
     SDL_Quit();
 }

@@ -2,4 +2,6 @@
 # to actually fucking work
 
 -std=c++17
+-Wno-vla-extension
+-Wno-vla
 -Iinclude

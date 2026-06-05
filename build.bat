@@ -14,5 +14,5 @@ g++ src\main.cpp ^
     %BUILD_FLAGS% ^
     -Iinclude ^
     -Llib ^
-    -lSDL3 ^
+    -lSDL3 -lSDL3_image ^
     -o build\g.exe
