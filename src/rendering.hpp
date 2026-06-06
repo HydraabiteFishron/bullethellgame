@@ -12,10 +12,6 @@ struct Camera {
     f32 zoom = 1.0f;
 };
 
-inline Camera CreateCamera(Vec2 pos = {0.0f,0.0f}, f32 zoom = 1.0f) {
-    return { pos, zoom };
-}
-
 #pragma region Rendering Math
 Vec2 GetTopleft(const Vec2 pos, const Vec2 size, const Vec2 origin = CENTER_ORIGIN);
 Vec2 GetRenderCoords(const Camera& cam, const Vec2 world_pos, const Vec2 screen_dimensions);

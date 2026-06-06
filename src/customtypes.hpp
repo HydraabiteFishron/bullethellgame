@@ -23,8 +23,8 @@ constexpr double PI_F64 = 3.14159265358979323846;
 constexpr float PI_F32 = 3.14159265f; 
 
 struct Vec2 {
-    f32 x;
-    f32 y;
+    f32 x = 0.0f;
+    f32 y = 0.0f;
 
     constexpr f32 Length() const {
         return hypotf(x, y);

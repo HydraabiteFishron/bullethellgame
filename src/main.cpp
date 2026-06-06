@@ -31,26 +31,14 @@ constexpr inline T Lerp(const T& a, const T& b, float t) {
 struct Player {
     Vec2 vel;
     Vec2 pos;
-    Vec2 size;
+    Vec2 size = { 8.0f, 8.0f };
 
-	f32 radius;
-    f32 speed;
-    f32 focused_speed;
+	f32 radius = 3.0f;
+    f32 speed = 150.0f;
+    f32 focused_speed = 75.0f;
 
-    f32 inv_timer;
+    f32 inv_timer = 0.0f;
 };
-
-Player CreatePlayer() {
-    Player player {
-        .pos = { 0.0f, 0.0f },
-        .size = { 8.0f, 8.0f },
-		.radius = 3.0f,
-        .speed = 150.0f,
-        .focused_speed = 75.0f
-    };
-
-    return player;
-}
 
 struct Bullet {
     Vec2 vel;
@@ -61,6 +49,7 @@ struct Bullet {
 };
 
 enum BPType : u8 {
+	BP_INVALID,
     BP_NITORI_RIPOFF,
     BP_AMOUNT
 };
@@ -71,20 +60,17 @@ struct BulletPattern {
     // bullet positions will be relative to this.
     Vec2 pos;
 
-    f32 elapsed;
-    f32 last_summon_time;
+    f32 elapsed = 0.0f;
+    f32 last_summon_time = 0.0f;
 
     BPType type;
 };
 
-BulletPattern CreateBulletPattern(BPType type, Vec2 world_origin, size_t initial_vector_capacity = 64) {
-    BulletPattern bp = {};
-    bp.bullets = {};
+BulletPattern CreateBulletPattern(BPType type, Vec2 world_pos, size_t initial_vector_capacity = 64) {
+    BulletPattern bp;
     bp.bullets.reserve(initial_vector_capacity);
-    bp.pos = world_origin;
+    bp.pos = world_pos;
     bp.type = type;
-    bp.elapsed = 0.0f;
-    bp.last_summon_time = 0.0f;
 
     return bp;
 }
@@ -118,19 +104,28 @@ struct WorldTiles {
 };
 
 enum CameraState : u8 {
-	CAMERA_STATIC,
+	CAMERA_DEFAULT,
 	CAMERA_FOLLOW_PLAYER,
+};
+
+enum CameraDevHax : u8 {
+	CAMDEVHAX_NONE,
+	CAMDEVHAX_FREECAM,
+	CAMDEVHAX_ZOOM_HAX,
+	CAMDEVHAX_AMOUNT
 };
 
 struct World {
     std::vector<BulletPattern> active_patterns = {};
 	WorldTiles tiles = {};
     Player player = {};
-    Camera camera = {};
-	Camera freecam = {};
 
-	CameraState cam_state = CAMERA_STATIC;
-	bool freecam_enabled = false;
+    Camera camera;
+	Camera freecam;
+	f32 zoom_override = 1.0f;
+
+	CameraState cam_state = CAMERA_DEFAULT;
+	CameraDevHax camdevhax = CAMDEVHAX_NONE;
 };
 
 World CreateDebugWorld() {
@@ -139,21 +134,13 @@ World CreateDebugWorld() {
     w.active_patterns.reserve(1);
     w.active_patterns.push_back(CreateBulletPattern(BP_NITORI_RIPOFF, {0.0f, 0.0f}));
 
-    w.player = CreatePlayer();
-    w.camera = CreateCamera();
-	w.freecam = CreateCamera();
-	w.cam_state = CAMERA_STATIC;
-
+	w.cam_state = CAMERA_DEFAULT;
     return w;
 }
 
 World CreateDebugWorld2() {
     World w;
     w.active_patterns = {};
-
-    w.player = CreatePlayer();
-    w.camera = CreateCamera();
-	w.freecam = CreateCamera();
 	w.cam_state = CAMERA_FOLLOW_PLAYER;
 
     return w;
@@ -358,8 +345,11 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
                 break;
 
 			case SDLK_G: {
-				World *wld = &state->world;
-				wld->freecam_enabled = !wld->freecam_enabled;
+				CameraDevHax *hax = &state->world.camdevhax;
+
+				// cycle through camdevhax
+				u8 new_hax = (*hax + 1) % CAMDEVHAX_AMOUNT;
+				*hax = CameraDevHax(new_hax);
 			} break;
 
             default:
@@ -369,12 +359,17 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
     } break;
 
 	case SDL_EVENT_MOUSE_WHEEL: {
-		if (!state->world.freecam_enabled)
+		f32 *zoom = NULL;
+
+		CameraDevHax hax = state->world.camdevhax;
+		if (hax == CAMDEVHAX_FREECAM)
+			zoom = &state->world.freecam.zoom;
+		else if (hax == CAMDEVHAX_ZOOM_HAX)
+			zoom = &state->world.zoom_override;
+		else
 			break;
 
-		f32 *zoom = &state->world.freecam.zoom;
 		*zoom *= std::pow(1.1f, event->wheel.y);
-
 		if (*zoom < 0.1f)
 			*zoom = 0.1f;
 		else if (*zoom > 5.0f)
@@ -389,6 +384,7 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) {
 }
 #pragma endregion // Events
 
+#pragma region Iteration
 SDL_AppResult SDL_AppIterate(void* appstate) {
     Game *state = (Game *)appstate;
 
@@ -412,7 +408,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     Vec2 wn_size = { f32(game->ww), f32(game->wh) };
 
 	// Movement
-	if (wld->freecam_enabled) {
+	if (wld->camdevhax == CAMDEVHAX_FREECAM) {
         const bool *kb = state->kb;
         Vec2 dir = { 0.0f, 0.0f };
 
@@ -434,7 +430,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			wld->freecam.pos += dir * mvspd * dt;
         }
 	} // freecam movement
-	else {
+	else { // player movement
         const bool *kb = state->kb;
         Vec2 dir = { 0.0f, 0.0f };
 
@@ -460,7 +456,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		c->pos = p->pos;
 
 		// make sure freecam is synced when disabled
-		if (!wld->freecam_enabled) wld->freecam = *c;
+		if (wld->camdevhax != CAMDEVHAX_FREECAM)
+			wld->freecam = *c;
 	}
 
     // Update Bullet Patterns and Delete Offscreen
@@ -499,8 +496,12 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     /* render world*/ {
 		TextureMap *tex_map = &state->tex_map;
 		// cam to use for rendering
-		Camera *cam = (wld->freecam_enabled) ?
-			&wld->freecam : &wld->camera;
+		Camera rr_cam = *c;
+
+		if (wld->camdevhax == CAMDEVHAX_FREECAM)
+			rr_cam = wld->freecam;
+		else if (wld->camdevhax == CAMDEVHAX_ZOOM_HAX)
+			rr_cam.zoom = wld->zoom_override;
 
 		/* render tiles */ {
 			WorldTiles *tiles = &wld->tiles;
@@ -537,7 +538,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 							Tiles::GRASS_SRC;
 
 						SDL_FRect dst = GetScreenDSTFromWorld(
-							*cam, pos, size, wn_size
+							rr_cam, pos, size, wn_size
 						);
 
 						SDL_RenderTexture(
@@ -569,7 +570,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 							Tiles::GRASS_SRC;
 
 						SDL_FRect dst = GetScreenDSTFromWorld(
-							*cam, pos, size, wn_size
+							rr_cam, pos, size, wn_size
 						);
 
 						SDL_RenderTexture(
@@ -582,8 +583,12 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 				}
 
 				// TODO: render default_tile infinitely
-				constexpr int RENDER_DISTANCE_X = 3;
-				constexpr int RENDER_DISTANCE_Y = 2;
+				// constexpr int RENDER_DISTANCE_X = 1;
+				// constexpr int RENDER_DISTANCE_Y = 1;
+				//
+				// int ply_chunk_x = int(p->pos.x) / 8;
+				// int ply_chunk_y = int(p->pos.y) / 8;
+				// Vec2 ply_chunk_pos = {f32(ply_chunk_x), f32(ply_chunk_y)};
 
 			} else {
 				std::cout << "tex_map not found\n";
@@ -591,7 +596,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 		}
 
 		/* what the heck is a SDL_RenderGeometry()??? */ {
-			Vec2 pos = GetRenderCoords(*cam, p->pos, wn_size);
+			Vec2 pos = GetRenderCoords(rr_cam, p->pos, wn_size);
 			SDL_FColor col1 = {
 				Colors::red.r / 255.0,
 				Colors::red.g / 255.0,
@@ -605,7 +610,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 				Colors::white.a / 255.0
 			};
 
-			f32 zoom = cam->zoom;
+			f32 zoom = rr_cam.zoom;
 			RenderCircle(rr, pos, 4.5f * zoom, col1);
 			RenderCircle(rr, pos, 3.0f * zoom, col2);
 		} // SDL_RenderGeometry() test
@@ -615,7 +620,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
                 for (const auto& b : bp.bullets) {
 
 					SDL_FRect dst = GetScreenDSTFromWorld(
-						*cam,
+						rr_cam,
 						b.pos,
 						b.size,
 						wn_size
@@ -636,6 +641,7 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
     state->uc_ns.End();
     return SDL_APP_CONTINUE;
 }
+#pragma endregion // Iteration
 
 void SDL_AppQuit(void* appstate, SDL_AppResult result) {
     Game *state = (Game *)appstate;
