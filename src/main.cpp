@@ -76,12 +76,14 @@ BulletPattern CreateBulletPattern(BPType type, Vec2 world_pos, size_t initial_ve
 }
 
 namespace Tiles {
+	constexpr int CHUNK_SIZE = 16;
 	constexpr int SIZE = 16;
 	constexpr f32 SCALE_MOD = 1.69f;
 	constexpr f32 SCALED_SIZE = SIZE * SCALE_MOD;
 
 	constexpr char FILE_PATH[] = "assets/tiles_shit.png";
 	constexpr char TEXTURE_KEY[] = "tile_atlas";
+	constexpr char EMPTY_CHUNK_KEY[] = "empty_chunk";
 
 	// Hardcoded SRC Rects
 	constexpr SDL_FRect GRASS_SRC = {
@@ -94,14 +96,6 @@ namespace Tiles {
 		TILE_PATH,
 	};
 }
-
-struct WorldTiles {
-	std::vector<Tiles::Type> tiles = {};
-	size_t w = 0;
-	size_t h = 0;
-
-	Tiles::Type default_background_tile = Tiles::TILE_GRASS;
-};
 
 enum CameraState : u8 {
 	CAMERA_DEFAULT,
@@ -117,7 +111,6 @@ enum CameraDevHax : u8 {
 
 struct World {
     std::vector<BulletPattern> active_patterns = {};
-	WorldTiles tiles = {};
     Player player = {};
 
     Camera camera;
@@ -260,8 +253,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     }
     *appstate = game;
 
-    game->ww = 640;
-    game->wh = 360;
+    game->ww = default_width;
+    game->wh = default_height;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::cout << SDL_GetError() << "\n";
@@ -287,7 +280,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
     game->kb = SDL_GetKeyboardState(NULL);
 
     // fps
-    u64 target_fps = 0;
+    u64 target_fps = 60;
     game->uc_ns = CreateUpdateClockNS(target_fps);
 
 	// world
@@ -296,10 +289,48 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[]) {
 	// textures
 	TextureMap *tm = &game->tex_map;
 
-	SDL_Texture *tex = IMG_LoadTexture(game->rr, Tiles::FILE_PATH);
-	assert(tex != NULL && "tile_shit could not be loaded");
+	(*tm)[Tiles::TEXTURE_KEY] = IMG_LoadTexture(game->rr, Tiles::FILE_PATH);
+	assert((*tm)[Tiles::TEXTURE_KEY] != nullptr
+		&& "tile_shit.png could not be loaded");
 
-	(*tm)[Tiles::TEXTURE_KEY] = tex;
+	/* very stupid shenanigans */ {
+		constexpr int chunk_tex_size = Tiles::CHUNK_SIZE * Tiles::SCALED_SIZE;
+		SDL_Texture *empty_grass_chunk_target = SDL_CreateTexture(
+			game->rr,
+			SDL_PIXELFORMAT_RGBA8888,
+			SDL_TEXTUREACCESS_TARGET,
+			chunk_tex_size,
+			chunk_tex_size
+		);
+		
+		assert(empty_grass_chunk_target != nullptr
+			&& "could not create empty_grass_chunk"
+			"texture target with SDL_CreateTexture()");
+
+		// create the empty default chunk
+		SDL_SetRenderTarget(game->rr, empty_grass_chunk_target);
+		for (size_t y = 0; y < Tiles::CHUNK_SIZE; y++) {
+		for (size_t x = 0; x < Tiles::CHUNK_SIZE; x++) {
+			SDL_FRect dst = {
+				x * Tiles::SCALED_SIZE,
+				y * Tiles::SCALED_SIZE,
+				Tiles::SCALED_SIZE,
+				Tiles::SCALED_SIZE
+			};
+			SDL_FRect src = Tiles::GRASS_SRC;
+			SDL_RenderTexture(game->rr, (*tm)[Tiles::TEXTURE_KEY], &src, &dst);
+		}}
+		SDL_Surface *wa = SDL_RenderReadPixels(game->rr, NULL);
+		SDL_SetRenderTarget(game->rr, nullptr);
+
+		SDL_Texture *empty_grass_chunk_static =
+			SDL_CreateTextureFromSurface(game->rr, wa);
+
+		SDL_DestroyTexture(empty_grass_chunk_target);
+		SDL_DestroySurface(wa);
+		
+		(*tm)[Tiles::EMPTY_CHUNK_KEY] = empty_grass_chunk_static;
+	}
 
 	SDL_RaiseWindow(game->wn);
     return SDL_APP_CONTINUE;
@@ -504,8 +535,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 			rr_cam.zoom = wld->zoom_override;
 
 		/* render tiles */ {
-			WorldTiles *tiles = &wld->tiles;
 			auto it = tex_map->find(Tiles::TEXTURE_KEY);
+
 
 			if (it != tex_map->end()) {
 				SDL_Texture *tile_atlas = it->second;
@@ -513,8 +544,8 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 
 				SDL_GetTextureSize(tile_atlas, &tex_size.x, &tex_size.y);
 				tex_size *= Tiles::SCALE_MOD;
-				constexpr int CHUNK_SIZE = 16;
 
+				constexpr int CHUNK_SIZE = Tiles::CHUNK_SIZE;
 				int ply_chunk_x = int(p->pos.x) / (CHUNK_SIZE * Tiles::SCALED_SIZE);
 				int ply_chunk_y = int(p->pos.y) / (CHUNK_SIZE * Tiles::SCALED_SIZE);
 
@@ -539,37 +570,26 @@ SDL_AppResult SDL_AppIterate(void* appstate) {
 				}}
 
 				for (size_t c = 0; c < MAX_CTR; c++) {
-				for (size_t y = 0; y < CHUNK_SIZE; y++) {
-				for (size_t x = 0; x < CHUNK_SIZE; x++) {
 					Vec2 chunk_pos = chunks_to_render[c] * CHUNK_SIZE;
 					chunk_pos *= Tiles::SCALED_SIZE;
 
-					Vec2 tile_pos = {
-						f32(x) * f32(Tiles::SCALED_SIZE),
-						f32(y) * f32(Tiles::SCALED_SIZE)
-					};
-					tile_pos += chunk_pos;
-
-					Vec2 tile_size = {
+					constexpr Vec2 size_of_one_tile = {
 						f32(Tiles::SCALED_SIZE),
 						f32(Tiles::SCALED_SIZE)
 					};
+					constexpr Vec2 size_of_one_chunk = {
+						Tiles::SCALED_SIZE * CHUNK_SIZE,
+						Tiles::SCALED_SIZE * CHUNK_SIZE
+					};
 
-					SDL_FRect grass_src =
-						Tiles::GRASS_SRC;
+					Vec2 tl = GetTopleft(chunk_pos, size_of_one_tile);
+					Vec2 rc = GetRenderCoords(rr_cam, tl, wn_size);
+					Vec2 rs = size_of_one_chunk * rr_cam.zoom;
 
-					SDL_FRect dst = GetScreenDSTFromWorld(
-						rr_cam, tile_pos, tile_size, wn_size
-					);
-
-					SDL_RenderTexture(
-						rr,
-						tile_atlas,
-						&grass_src,
-						&dst
-					);
-				}}}
-
+					SDL_FRect dst = {rc.x,rc.y,rs.x,rs.y};
+					SDL_Texture *empty_chunk_tex = (*tex_map)[Tiles::EMPTY_CHUNK_KEY];
+					SDL_RenderTexture(rr, empty_chunk_tex, NULL, &dst);
+				}
 			} else {
 				std::cout << "tex_map not found\n";
 			}
